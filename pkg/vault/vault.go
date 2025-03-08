@@ -1,23 +1,14 @@
 package vault
 
 import (
-	"crypto"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hkdf"
-	"crypto/hmac"
-	"crypto/pbkdf2"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/mstergianis/vwp/pkg/config"
@@ -189,54 +180,6 @@ func (vw *VaultwardenInterface) Sync() error {
 	return nil
 }
 
-func decryptAES(encKey, macKey []byte, encryptedKey string) ([]byte, error) {
-	inputVector, data, mac, err := parseAES(encryptedKey)
-	if err != nil {
-		return nil, err
-	}
-	macData := append(inputVector, data...)
-	maccer := hmac.New(sha256.New, macKey)
-	_, err = maccer.Write(macData)
-	if err != nil {
-		return nil, err
-	}
-	computedMAC := maccer.Sum(nil)
-	if !hmac.Equal(mac, computedMAC) {
-		return nil, errors.New("computed MAC does not equal key MAC")
-	}
-
-	if len(data)%aes.BlockSize != 0 {
-		return nil, errors.New("encrypted key is not a multiple of the block size")
-	}
-
-	block, err := aes.NewCipher(encKey)
-	if err != nil {
-		return nil, err
-	}
-	mode := cipher.NewCBCDecrypter(block, inputVector)
-
-	decryptedUserKey := make([]byte, len(data))
-	mode.CryptBlocks(decryptedUserKey, data)
-
-	return StripPadding(decryptedUserKey), nil
-}
-
-func decryptRSA(data, privateKey []byte) (decryptedKey []byte, err error) {
-	anyKey, err := x509.ParsePKCS8PrivateKey(privateKey)
-	if err != nil {
-		return
-	}
-
-	rsaKey, ok := anyKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("parsing RSA private key")
-	}
-
-	return rsaKey.Decrypt(nil, data, &rsa.OAEPOptions{
-		Hash:    crypto.SHA1,
-		MGFHash: 0,
-		Label:   nil,
-	})
 }
 
 func byteArrToJSBufferOutput(arr []byte) string {
@@ -251,39 +194,6 @@ func byteArrToJSBufferOutput(arr []byte) string {
 	fmt.Fprint(s, ">")
 
 	return s.String()
-}
-
-func parseRSAKey(encryptedKey string) (key []byte, err error) {
-	components := strings.Split(encryptedKey, ".")
-	if len(components) != 2 {
-		return nil, fmt.Errorf("parsing RSA key expected exactly 2 components got %d", len(components))
-	}
-
-	return base64.StdEncoding.DecodeString(components[1])
-}
-
-func parseAES(key string) (inputVector, data, mac []byte, err error) {
-	components := strings.Split(key, "|")
-	if len(components) != 3 {
-		err = errors.New("user key should have exactly 3 components separated by pipe \"|\" chars")
-		return
-	}
-
-	inputVector, err = base64.StdEncoding.DecodeString(components[0][2:])
-	if err != nil {
-		return
-	}
-
-	data, err = base64.StdEncoding.DecodeString(components[1])
-	if err != nil {
-		return
-	}
-
-	mac, err = base64.StdEncoding.DecodeString(components[2])
-	if err != nil {
-		return
-	}
-	return
 }
 
 func splitCombinedKey(combinedKey []byte) (encKey, macKey []byte, err error) {
