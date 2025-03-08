@@ -66,11 +66,11 @@ func (vw *VaultwardenInterface) Sync() error {
 	if err != nil {
 		return err
 	}
-	masterEncKey, err := hkdf.Expand(sha256.New, masterKey, "enc", 32)
+	masterEncKey, err := hkdf.Expand(sha256.New, masterKey, "enc", HKDF_BIT_LENGTH)
 	if err != nil {
 		return err
 	}
-	masterMacKey, err := hkdf.Expand(sha256.New, masterKey, "mac", 32)
+	masterMacKey, err := hkdf.Expand(sha256.New, masterKey, "mac", HKDF_BIT_LENGTH)
 	if err != nil {
 		return err
 	}
@@ -234,3 +234,7 @@ func StripPadding(decryptedKey []byte) []byte {
 	}
 	return decryptedKey[:i+1]
 }
+
+const (
+	HKDF_BIT_LENGTH int = 32
+)
