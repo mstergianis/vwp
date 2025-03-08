@@ -182,6 +182,11 @@ func (vw *VaultwardenInterface) Sync() error {
 
 }
 
+// byteArrToJSBufferOutput is a debugging function.
+//
+// In the course of writing this program I often needed to compare values to the
+// bitwarden CLI counterpart, so this was a convenience function I'm not willing
+// to get rid of.
 func byteArrToJSBufferOutput(arr []byte) string {
 	s := &strings.Builder{}
 	fmt.Fprint(s, "<Buffer ")
@@ -196,6 +201,9 @@ func byteArrToJSBufferOutput(arr []byte) string {
 	return s.String()
 }
 
+// splitCombinedKey separates a key that has both enc and mac components.
+//
+// https://github.com/bitwarden/clients/blob/895b36a3d8a2e4e789c4c6c4498c7531af78833c/libs/common/src/platform/models/domain/symmetric-crypto-key.ts#L38-L49
 func splitCombinedKey(combinedKey []byte) (encKey, macKey []byte, err error) {
 	switch len(combinedKey) {
 	case 32:
@@ -207,11 +215,11 @@ func splitCombinedKey(combinedKey []byte) (encKey, macKey []byte, err error) {
 	}
 }
 
-// stripPadding strips the trailing repeated characters off of a byte slice
+// StripPadding strips the trailing repeated characters off of a byte slice
 //
 // bitwarden (or vaultwarden) appears to be using repeated bytes to pad out
 // encrypted values. But it isn't clear to me currently how they're choosing the
-// byte they use. Not sure why, nor why the JS libs are removing that padding.
+// byte they use. Not sure why, nor how the JS libs are removing that padding.
 func StripPadding(decryptedKey []byte) []byte {
 	if len(decryptedKey) < 1 {
 		return decryptedKey
