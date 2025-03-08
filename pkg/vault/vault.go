@@ -56,13 +56,7 @@ func (vw *VaultwardenInterface) Sync() error {
 	syncResponse := SyncResponse{}
 	json.Unmarshal(respBody, &syncResponse)
 
-	masterKey, err := pbkdf2.Key(
-		sha256.New,
-		vw.config.Password(),
-		[]byte(vw.config.Username()),
-		int(token.KdfIterations),
-		32,
-	)
+	masterKey, err := vw.config.MasterKey()
 	if err != nil {
 		return err
 	}
