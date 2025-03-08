@@ -24,33 +24,39 @@ func New(config config.Config) *VaultwardenInterface {
 	}
 }
 
-func (vw *VaultwardenInterface) Sync() error {
+type Secret struct {
+	Name     string `json:"name"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (vw *VaultwardenInterface) GetAllSecrets() ([]Secret, error) {
 	req, err := http.NewRequest("GET", vw.config.Server()+"/api/sync", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	token, err := vw.config.Token()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	accessToken := token.AccessToken
 
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// try again on 401?
 		log.Println(resp.Status)
-		return errors.New("received a non-200 status code")
+		return nil, errors.New("received a non-200 status code")
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// fmt.Println(string(respBody))
 	syncResponse := SyncResponse{}
@@ -58,48 +64,48 @@ func (vw *VaultwardenInterface) Sync() error {
 
 	masterKey, err := vw.config.MasterKey()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	masterEncKey, err := hkdf.Expand(sha256.New, masterKey, "enc", HKDF_BIT_LENGTH)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	masterMacKey, err := hkdf.Expand(sha256.New, masterKey, "mac", HKDF_BIT_LENGTH)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	key := syncResponse.Profile.Key
 	decryptedUserKey, err := decryptAES(masterEncKey, masterMacKey, key)
 	if err != nil {
-		return fmt.Errorf("decrypting user key: %w", err)
+		return nil, fmt.Errorf("decrypting user key: %w", err)
 	}
 	userEncKey, userMacKey, err := splitCombinedKey(decryptedUserKey)
 	if err != nil {
-		return fmt.Errorf("splitting userKey: %w", err)
+		return nil, fmt.Errorf("splitting userKey: %w", err)
 	}
 
 	if token.PrivateKey == nil {
-		return errors.New("sync: could not find private key")
+		return nil, errors.New("sync: could not find private key")
 	}
 	privateKey := *token.PrivateKey
 	decryptedPrivateKey, err := decryptAES(userEncKey, userMacKey, privateKey)
 	if err != nil {
-		return fmt.Errorf("decrypting private key: %w", err)
+		return nil, fmt.Errorf("decrypting private key: %w", err)
 	}
 
-	vals := []map[string]string{}
+	secrets := []Secret{}
 	for _, cipher := range syncResponse.Ciphers {
 		var encKey = userEncKey
 		var macKey = userMacKey
 		if cipher.Key != nil {
 			cipherKey, err := decryptAES(userEncKey, userMacKey, *cipher.Key)
 			if err != nil {
-				return fmt.Errorf("decrypting item (%s) key: %w", cipher.ID, err)
+				return nil, fmt.Errorf("decrypting item (%s) key: %w", cipher.ID, err)
 			}
 			encKey, macKey, err = splitCombinedKey(cipherKey)
 			if err != nil {
-				return fmt.Errorf("splitting cipher key (%s): %w", cipher.ID, err)
+				return nil, fmt.Errorf("splitting cipher key (%s): %w", cipher.ID, err)
 			}
 		}
 
@@ -111,28 +117,28 @@ func (vw *VaultwardenInterface) Sync() error {
 				}
 			}
 			if org == nil {
-				return fmt.Errorf("could not find organization (%s) in user profile", cipher.OrganizationID)
+				return nil, fmt.Errorf("could not find organization (%s) in user profile", cipher.OrganizationID)
 			}
 
 			encryptedRSAKey, err := parseRSAKey(org.Key)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			orgKey, err := decryptRSA(encryptedRSAKey, decryptedPrivateKey)
 			if err != nil {
-				return fmt.Errorf("decrypting org key for cipher (%s) key: %w", cipher.ID, err)
+				return nil, fmt.Errorf("decrypting org key for cipher (%s) key: %w", cipher.ID, err)
 			}
 
 			encKey, macKey, err = splitCombinedKey(orgKey)
 			if err != nil {
-				return fmt.Errorf("splitting cipher key (%s): %w", cipher.ID, err)
+				return nil, fmt.Errorf("splitting cipher key (%s): %w", cipher.ID, err)
 			}
 		}
 
 		decryptedCipherName, err := decryptAES(encKey, macKey, cipher.Name)
 		if err != nil {
-			return fmt.Errorf("decrypting cipher name (%s): %w", cipher.ID, err)
+			return nil, fmt.Errorf("decrypting cipher name (%s): %w", cipher.ID, err)
 		}
 
 		if cipher.Login == nil {
@@ -144,7 +150,7 @@ func (vw *VaultwardenInterface) Sync() error {
 		if cipher.Login.Username != nil {
 			decryptedCipherUsername, err = decryptAES(encKey, macKey, *cipher.Login.Username)
 			if err != nil {
-				return fmt.Errorf("decrypting cipher username (%s): %w", cipher.ID, err)
+				return nil, fmt.Errorf("decrypting cipher username (%s): %w", cipher.ID, err)
 			}
 		}
 
@@ -155,25 +161,17 @@ func (vw *VaultwardenInterface) Sync() error {
 
 		decryptedCipherPassword, err := decryptAES(encKey, macKey, *cipher.Login.Password)
 		if err != nil {
-			return fmt.Errorf("decrypting cipher password (%s, %s): %w", cipher.ID, decryptedCipherName, err)
+			return nil, fmt.Errorf("decrypting cipher password (%s, %s): %w", cipher.ID, decryptedCipherName, err)
 		}
 
-		vals = append(vals, map[string]string{
-			"name":     string(decryptedCipherName),
-			"username": string(decryptedCipherUsername),
-			"password": string(decryptedCipherPassword),
+		secrets = append(secrets, Secret{
+			Name:     string(decryptedCipherName),
+			Username: string(decryptedCipherUsername),
+			Password: string(decryptedCipherPassword),
 		})
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	err = enc.Encode(vals)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
+	return secrets, nil
 }
 
 // byteArrToJSBufferOutput is a debugging function.

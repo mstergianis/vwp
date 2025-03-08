@@ -4,6 +4,7 @@ Copyright © 2025 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path"
 
@@ -29,7 +30,18 @@ var rootCmd = &cobra.Command{
 		}
 
 		vwi := vault.New(conf)
-		return vwi.Sync()
+
+		secrets, err := vwi.GetAllSecrets()
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		err = enc.Encode(secrets)
+		if err != nil {
+			return err
+		}
+
+		return nil
 	},
 }
 
