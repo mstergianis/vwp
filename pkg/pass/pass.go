@@ -9,18 +9,23 @@ import (
 	"strings"
 )
 
-type Pass struct {
+type Pass interface {
+	Add(secret, location string) error
+	Read(location string) (string, error)
+}
+
+type pass struct {
 	subdir string
 	logger *log.Logger
 }
 
-type Option func(*Pass)
+type Option func(*pass)
 
 // New returns a new [*Pass] struct.
 //
 // It is configured to run pass in the subdir.
-func New(subdir string, opts ...Option) *Pass {
-	p := &Pass{subdir: subdir}
+func New(subdir string, opts ...Option) Pass {
+	p := &pass{subdir: subdir}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -28,7 +33,7 @@ func New(subdir string, opts ...Option) *Pass {
 }
 
 func WithLogger(l *log.Logger) Option {
-	return func(p *Pass) {
+	return func(p *pass) {
 		p.logger = l
 	}
 }
@@ -37,7 +42,7 @@ func WithLogger(l *log.Logger) Option {
 //
 // Add will use pass insert -f by default. So without prompting the user it will
 // overwrite secrets.
-func (p *Pass) Add(secret, location string) error {
+func (p *pass) Add(secret, location string) error {
 	stdinContents := fmt.Sprintf("%s\n%s\n", secret, secret)
 	stdout, err := runPass(stdinContents, "insert", "-f", p.resolveLocation(location))
 	if err != nil {
@@ -50,7 +55,7 @@ func (p *Pass) Add(secret, location string) error {
 }
 
 // Read a secret at the given location.
-func (p *Pass) Read(location string) (string, error) {
+func (p *pass) Read(location string) (string, error) {
 	secret, err := runPass("", "show", p.resolveLocation(location))
 	if err != nil {
 		return "", err
@@ -59,7 +64,7 @@ func (p *Pass) Read(location string) (string, error) {
 	return strings.TrimSpace(secret), nil
 }
 
-func (p *Pass) resolveLocation(location string) string {
+func (p *pass) resolveLocation(location string) string {
 	return path.Join(p.subdir, location)
 }
 
