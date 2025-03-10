@@ -42,7 +42,8 @@ contexts:
 		u := conf.Username()
 		assert.Equal(t, "myusername", u)
 
-		p := conf.Password()
+		p, err := conf.Password()
+		assert.NoError(t, err)
 		assert.Equal(t, "mypassword", p)
 
 		assert.NoError(t, os.Remove(fileName))

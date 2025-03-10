@@ -23,40 +23,12 @@ import (
 type Config interface {
 	CurrentContextName() string
 	Username() string
-	Password() string
+	Password() (string, error)
 	Server() string
 	Token() (*Token, error)
 	AccessToken() (string, error)
 	PrivateKey() string
 	MasterKey() ([]byte, error)
-}
-
-func EmptyConfigErr(file string) error {
-	return fmt.Errorf("config: config file %q is empty", file)
-}
-
-type config struct {
-	configFile string
-
-	Contexts       []Context `yaml:"contexts"`
-	CurrentContext string    `yaml:"currentContext"`
-
-	kdfConfig KdfConfig
-
-	context *Context
-	token   *Token
-}
-
-type Context struct {
-	Name     string    `yaml:"name"`
-	Server   string    `yaml:"server"`
-	Username string    `yaml:"username"`
-	Password *Password `yaml:"password"`
-}
-
-type Password struct {
-	Typ   string `yaml:"type"`
-	Value string `yaml:"value"`
 }
 
 func New(fileName string) (Config, error) {
@@ -84,6 +56,29 @@ func New(fileName string) (Config, error) {
 	}
 
 	return c, nil
+}
+
+func EmptyConfigErr(file string) error {
+	return fmt.Errorf("config: config file %q is empty", file)
+}
+
+type config struct {
+	configFile string
+
+	Contexts       []Context `yaml:"contexts"`
+	CurrentContext string    `yaml:"currentContext"`
+
+	kdfConfig KdfConfig
+
+	context *Context
+	token   *Token
+}
+
+type Context struct {
+	Name     string    `yaml:"name"`
+	Server   string    `yaml:"server"`
+	Username string    `yaml:"username"`
+	Password *Password `yaml:"password"`
 }
 
 func validate(c *config) error {
@@ -134,12 +129,12 @@ func (c *config) Username() string {
 	return c.context.Username
 }
 
-func (c *config) Password() string {
-	return c.context.Password.Value
+func (c *config) Password() (string, error) {
+	return c.context.Password.Password()
 }
 
 func (c *config) AccessToken() (string, error) {
-	token, err := c.getToken()
+	token, err := c.Token()
 	if err != nil {
 		return "", err
 	}
@@ -147,51 +142,10 @@ func (c *config) AccessToken() (string, error) {
 }
 
 func (c *config) Token() (*Token, error) {
-	return c.getToken()
-}
-
-func (c *config) PrivateKey() string {
-	if p := c.token.PrivateKey; p != nil {
-		return *p
-	}
-	return ""
-}
-
-func (c *config) KdfIterations() int32 {
-	return c.kdfConfig.KdfIterations
-}
-
-func (c *config) getKDFConfig() error {
-	preloginReqBody := &bytes.Buffer{}
-	fmt.Fprintf(preloginReqBody, `{"email": %q}`, c.Username())
-	preloginResp, err := http.Post(c.Server()+"/identity/accounts/prelogin", "application/json", preloginReqBody)
-	if err != nil {
-		return err
-	}
-	preloginRespBody, err := io.ReadAll(preloginResp.Body)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(preloginRespBody, &c.kdfConfig)
-}
-
-func (c *config) MasterKey() ([]byte, error) {
-	email := []byte(strings.ToLower(strings.TrimSpace(c.Username())))
-	masterKey, err := pbkdf2.Key(
-		sha256.New,
-		c.Password(),
-		email,
-		int(c.KdfIterations()),
-		32,
-	)
-	return masterKey, err
-}
-
-func (c *config) getToken() (token *Token, err error) {
 	if c.token != nil {
 		return c.token, nil
 	}
-	token, err = GetJWTFromFileCache()
+	token, err := GetJWTFromFileCache()
 	switch {
 	case errors.Is(err, TokenExpiryError):
 		break
@@ -211,7 +165,12 @@ func (c *config) getToken() (token *Token, err error) {
 	if err != nil {
 		return nil, err
 	}
-	hashed, err := pbkdf2.Key(sha256.New, string(masterKey), []byte(c.Password()), 1, 32)
+
+	password, err := c.Password()
+	if err != nil {
+		return nil, err
+	}
+	hashed, err := pbkdf2.Key(sha256.New, string(masterKey), []byte(password), 1, 32)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +203,7 @@ func (c *config) getToken() (token *Token, err error) {
 		return nil, fmt.Errorf("vwp: reading new token resp body: %w", err)
 	}
 
-	token = new(Token)
+	token = &Token{}
 	err = json.Unmarshal(respBody, token)
 	if err != nil {
 		return nil, fmt.Errorf("vwp: unmarshalling json of new token: %w", err)
@@ -257,6 +216,48 @@ func (c *config) getToken() (token *Token, err error) {
 
 	c.token = token
 	return c.token, nil
+}
+
+func (c *config) PrivateKey() string {
+	if p := c.token.PrivateKey; p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (c *config) KdfIterations() int32 {
+	return c.kdfConfig.KdfIterations
+}
+
+func (c *config) getKDFConfig() error {
+	preloginReqBody := &bytes.Buffer{}
+	fmt.Fprintf(preloginReqBody, `{"email": %q}`, c.Username())
+	preloginResp, err := http.Post(c.Server()+"/identity/accounts/prelogin", "application/json", preloginReqBody)
+	if err != nil {
+		return err
+	}
+	preloginRespBody, err := io.ReadAll(preloginResp.Body)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(preloginRespBody, &c.kdfConfig)
+}
+
+func (c *config) MasterKey() ([]byte, error) {
+	email := []byte(strings.ToLower(strings.TrimSpace(c.Username())))
+
+	password, err := c.Password()
+	if err != nil {
+		return nil, err
+	}
+	masterKey, err := pbkdf2.Key(
+		sha256.New,
+		password,
+		email,
+		int(c.KdfIterations()),
+		32,
+	)
+	return masterKey, err
 }
 
 func GetJWTFromFileCache() (token *Token, err error) {
