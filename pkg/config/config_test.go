@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/mstergianis/vwp/pkg/config"
+	"github.com/mstergianis/vwp/pkg/pass"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -31,7 +32,44 @@ contexts:
 		fileName := f.Name()
 		f.Close()
 
-		conf, err := config.New(fileName)
+		conf, err := config.New(fileName, mockPassFactory)
+		assert.NoError(t, err, "creating config")
+
+		assert.Equal(t, "mine", conf.CurrentContextName())
+
+		s := conf.Server()
+		assert.Equal(t, "https://myserver.io", s)
+
+		u := conf.Username()
+		assert.Equal(t, "myusername", u)
+
+		p, err := conf.Password()
+		assert.NoError(t, err)
+		assert.Equal(t, "mypassword", p)
+
+		assert.NoError(t, os.Remove(fileName))
+	})
+
+	t.Run("pass backed password", func(t *testing.T) {
+		f, err := os.CreateTemp(os.TempDir(), "new-config-*")
+		assert.NoError(t, err)
+
+		contents := `
+currentContext: mine
+contexts:
+  - name: mine
+    server: https://myserver.io
+    username: myusername
+    password:
+      type: pass
+      value: mypasswordlocation
+`
+		fmt.Fprint(f, contents)
+
+		fileName := f.Name()
+		f.Close()
+
+		conf, err := config.New(fileName, customPassFactory(true))
 		assert.NoError(t, err, "creating config")
 
 		assert.Equal(t, "mine", conf.CurrentContextName())
@@ -55,9 +93,9 @@ contexts:
 		fileName := f.Name()
 		f.Close()
 
-		_, err = config.New(fileName)
+		_, err = config.New(fileName, mockPassFactory)
 		assert.Error(t, err, "creating config")
-		assert.ErrorContains(t, err, "vwp: error parsing config file EOF")
+		assert.ErrorContains(t, err, "config: error parsing config file EOF")
 
 		assert.NoError(t, os.Remove(fileName))
 	})
@@ -74,11 +112,11 @@ true
 		fileName := f.Name()
 		f.Close()
 
-		_, err = config.New(fileName)
+		_, err = config.New(fileName, mockPassFactory)
 		assert.ErrorContains(
 			t,
 			err,
-			"vwp: error parsing config file yaml: unmarshal errors:\n  line 2: cannot unmarshal !!bool `true` into config.config",
+			"config: error parsing config file yaml: unmarshal errors:\n  line 2: cannot unmarshal !!bool `true` into config.config",
 		)
 		assert.NoError(t, os.Remove(fileName))
 	})
@@ -108,13 +146,13 @@ contexts:
 		fileName := f.Name()
 		f.Close()
 
-		_, err = config.New(fileName)
-		assert.ErrorContains(t, err, "vwp: selected context mine is not available in the list of contexts theirs, ours", "creating config")
+		_, err = config.New(fileName, mockPassFactory)
+		assert.ErrorContains(t, err, "config: selected context mine is not available in the list of contexts theirs, ours", "creating config")
 
 		assert.NoError(t, os.Remove(fileName))
 	})
 
-	for _, field := range []string{"name", "username", "password.value", "password.type", "server"} {
+	for _, field := range []string{"name", "username", "password.value", "server"} {
 		t.Run(fmt.Sprintf("empty %s", field), func(t *testing.T) {
 			f, err := os.CreateTemp(os.TempDir(), "new-config-*")
 			assert.NoError(t, err)
@@ -125,12 +163,63 @@ contexts:
 			fileName := f.Name()
 			f.Close()
 
-			_, err = config.New(fileName)
-			assert.ErrorContains(t, err, fmt.Sprintf("vwp: error parsing config missing field %s", field))
+			_, err = config.New(fileName, mockPassFactory)
+			assert.ErrorContains(t, err, fmt.Sprintf("config: error parsing config missing field %s", field))
 
 			assert.NoError(t, os.Remove(fileName))
 		})
 	}
+
+	t.Run("password store does not contain password", func(t *testing.T) {
+		f, err := os.CreateTemp(os.TempDir(), "new-config-*")
+		assert.NoError(t, err)
+
+		contents := `
+currentContext: mine
+contexts:
+  - name: mine
+    server: https://myserver.io
+    username: myusername
+    password:
+      type: pass
+      value: does-not-exist
+`
+		fmt.Fprint(f, contents)
+
+		fileName := f.Name()
+		f.Close()
+
+		_, err = config.New(fileName, mockPassFactory)
+		assert.ErrorContains(t, err, "config: pass does not have a secret at the location: \"does-not-exist\"")
+
+		assert.NoError(t, os.Remove(fileName))
+	})
+
+	t.Run("unsupported password type", func(t *testing.T) {
+		f, err := os.CreateTemp(os.TempDir(), "new-config-*")
+		assert.NoError(t, err)
+
+		contents := `
+currentContext: mine
+contexts:
+  - name: mine
+    server: https://myserver.io
+    username: myusername
+    password:
+      type: unsupported
+      value: mypassword
+`
+		fmt.Fprint(f, contents)
+
+		fileName := f.Name()
+		f.Close()
+
+		_, err = config.New(fileName, mockPassFactory)
+		assert.ErrorContains(t, err, config.UnsupportedPasswordTypeErr("unsupported").Error())
+
+		assert.NoError(t, os.Remove(fileName))
+	})
+
 }
 
 func templateEmptyField(t *testing.T, field string) string {
@@ -182,4 +271,32 @@ contexts:
 	}
 
 	return s.String()
+}
+
+type mockPass struct {
+	locationExists bool
+}
+
+func (m *mockPass) Add(secret, location string) error {
+	return nil
+}
+
+func (m *mockPass) Read(location string) (string, error) {
+	return "mypassword", nil
+}
+
+func (m *mockPass) LocationExists(location string) (bool, error) {
+	return m.locationExists, nil
+}
+
+func mockPassFactory() pass.Pass {
+	return &mockPass{
+		locationExists: false,
+	}
+}
+
+func customPassFactory(locationExists bool) config.PassFactory {
+	return func() pass.Pass {
+		return &mockPass{locationExists: locationExists}
+	}
 }

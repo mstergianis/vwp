@@ -9,6 +9,7 @@ import (
 	"path"
 
 	"github.com/mstergianis/vwp/pkg/config"
+	"github.com/mstergianis/vwp/pkg/pass"
 	"github.com/mstergianis/vwp/pkg/vault"
 	"github.com/mstergianis/vwp/pkg/xdg"
 	"github.com/spf13/cobra"
@@ -24,7 +25,10 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		conf, err := config.New(path.Join(configHome, "config.yaml"))
+		conf, err := config.New(
+			path.Join(configHome, "config.yaml"),
+			func() pass.Pass { return pass.New("") },
+		)
 		if err != nil {
 			return err
 		}
@@ -35,10 +39,20 @@ var rootCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		enc := json.NewEncoder(os.Stdout)
-		err = enc.Encode(secrets)
-		if err != nil {
-			return err
+
+		if len(args) > 0 && args[0] == "debug" {
+			enc := json.NewEncoder(os.Stdout)
+			err = enc.Encode(secrets)
+			if err != nil {
+				return err
+			}
+			return
+		}
+
+		vwpPassRunner := pass.New("vwp")
+		for _, secret := range secrets {
+			vwpPassRunner.Add(secret.Password, path.Join(secret.Name, "password"))
+			vwpPassRunner.Add(secret.Username, path.Join(secret.Name, "username"))
 		}
 
 		return nil

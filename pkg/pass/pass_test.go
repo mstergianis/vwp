@@ -27,6 +27,14 @@ func TestPass(t *testing.T) {
 		assert.NoError(t, err, "cleanup failed: testDir: %q needs to be cleaned up manually", testDir)
 	}()
 
+	exists, err := p.LocationExists("foo")
+	assert.NoError(t, err)
+	assert.True(t, exists)
+
+	exists, err = p.LocationExists("bar")
+	assert.NoError(t, err)
+	assert.False(t, exists)
+
 	secret, err := p.Read("foo")
 	assert.Equal(t, "mysecret", secret, "reading the secret should give back the same text")
 }

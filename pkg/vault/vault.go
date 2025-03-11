@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/mstergianis/vwp/pkg/config"
 )
@@ -165,13 +166,23 @@ func (vw *VaultwardenInterface) GetAllSecrets() ([]Secret, error) {
 		}
 
 		secrets = append(secrets, Secret{
-			Name:     string(decryptedCipherName),
-			Username: string(decryptedCipherUsername),
-			Password: string(decryptedCipherPassword),
+			Name:     normalizeSecretValue(string(decryptedCipherName)),
+			Username: normalizeSecretValue(string(decryptedCipherUsername)),
+			Password: normalizeSecretValue(string(decryptedCipherPassword)),
 		})
 	}
 
 	return secrets, nil
+}
+
+func normalizeSecretValue(s string) string {
+	result := strings.Builder{}
+	for _, r := range s {
+		if unicode.IsGraphic(r) {
+			result.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(result.String())
 }
 
 // byteArrToJSBufferOutput is a debugging function.
@@ -202,9 +213,9 @@ func splitCombinedKey(combinedKey []byte) (encKey, macKey []byte, err error) {
 		return combinedKey[0:16], combinedKey[16:], nil
 	case 64:
 		return combinedKey[0:32], combinedKey[32:], nil
-	default:
-		return nil, nil, fmt.Errorf("splitting combined key: unsupported key length %d", len(combinedKey))
 	}
+
+	return nil, nil, fmt.Errorf("splitting combined key: unsupported key length %d", len(combinedKey))
 }
 
 // StripPadding strips the trailing repeated characters off of a byte slice

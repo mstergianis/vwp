@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mstergianis/vwp/pkg/pass"
 	"github.com/mstergianis/vwp/pkg/xdg"
 	"gopkg.in/yaml.v3"
 )
@@ -26,23 +27,25 @@ type Config interface {
 	Password() (string, error)
 	Server() string
 	Token() (*Token, error)
-	AccessToken() (string, error)
 	PrivateKey() string
 	MasterKey() ([]byte, error)
 }
 
-func New(fileName string) (Config, error) {
+type PassFactory func() pass.Pass
+
+func New(fileName string, passFactory PassFactory) (Config, error) {
 	configFile, err := os.Open(fileName)
 	if err != nil {
 		return nil, err
 	}
 	c := &config{
 		configFile: configFile.Name(),
+		pass:       passFactory(),
 	}
 	decoder := yaml.NewDecoder(configFile)
 	err = decoder.Decode(c)
 	if err != nil {
-		return nil, fmt.Errorf("vwp: error parsing config file %w", err)
+		return nil, fmt.Errorf("config: error parsing config file %w", err)
 	}
 
 	for i, context := range c.Contexts {
@@ -58,10 +61,6 @@ func New(fileName string) (Config, error) {
 	return c, nil
 }
 
-func EmptyConfigErr(file string) error {
-	return fmt.Errorf("config: config file %q is empty", file)
-}
-
 type config struct {
 	configFile string
 
@@ -72,6 +71,8 @@ type config struct {
 
 	context *Context
 	token   *Token
+
+	pass pass.Pass
 }
 
 type Context struct {
@@ -81,36 +82,9 @@ type Context struct {
 	Password *Password `yaml:"password"`
 }
 
-func validate(c *config) error {
-	contextList := []string{}
-	for _, context := range c.Contexts {
-		contextList = append(contextList, context.Name)
-	}
-
-	if c.context == nil {
-		return fmt.Errorf(
-			"vwp: selected context %s is not available in the list of contexts %s",
-			c.CurrentContext,
-			strings.Join(contextList, ", "),
-		)
-	}
-
-	for _, context := range c.Contexts {
-		fields := [][2]string{
-			{context.Name, "name"},
-			{context.Server, "server"},
-			{context.Username, "username"},
-			{context.Password.Value, "password.value"},
-			{context.Password.Typ, "password.type"},
-		}
-		for _, field := range fields {
-			if strings.TrimSpace(field[0]) == "" {
-				return fmt.Errorf("vwp: error parsing config missing field %s", field[1])
-			}
-
-		}
-	}
-	return nil
+type Password struct {
+	Typ   string `yaml:"type"`
+	Value string `yaml:"value"`
 }
 
 func (c *config) CurrentContextName() string {
@@ -130,21 +104,29 @@ func (c *config) Username() string {
 }
 
 func (c *config) Password() (string, error) {
-	return c.context.Password.Password()
-}
-
-func (c *config) AccessToken() (string, error) {
-	token, err := c.Token()
-	if err != nil {
-		return "", err
+	switch c.context.Password.Typ {
+	case "plaintext":
+		return c.context.Password.Value, nil
+	case "pass":
+		{
+			return c.pass.Read(c.context.Password.Value)
+		}
 	}
-	return token.AccessToken, nil
+
+	return "", UnsupportedPasswordTypeErr(c.context.Password.Typ)
 }
 
 func (c *config) Token() (*Token, error) {
 	if c.token != nil {
 		return c.token, nil
 	}
+
+	var err error
+	c.kdfConfig, err = c.fetchKDFConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	token, err := GetJWTFromFileCache()
 	switch {
 	case errors.Is(err, TokenExpiryError):
@@ -157,10 +139,10 @@ func (c *config) Token() (*Token, error) {
 		return token, nil
 	}
 
-	err = c.getKDFConfig()
-	if err != nil {
-		return nil, err
-	}
+	return c.fetchNewToken()
+}
+
+func (c *config) fetchNewToken() (token *Token, err error) {
 	masterKey, err := c.MasterKey()
 	if err != nil {
 		return nil, err
@@ -190,23 +172,23 @@ func (c *config) Token() (*Token, error) {
 
 	resp, err := http.PostForm(c.Server()+"/identity/connect/token", creds)
 	if err != nil {
-		return nil, fmt.Errorf("vwp: fetching new token: %w", err)
+		return nil, fmt.Errorf("config: fetching new token: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// try again on 401?
-		return nil, fmt.Errorf("vwp: fetching new token recieved status %d, %s", resp.StatusCode, resp.Status)
+		return nil, fmt.Errorf("config: fetching new token recieved status %d, %s", resp.StatusCode, resp.Status)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("vwp: reading new token resp body: %w", err)
+		return nil, fmt.Errorf("config: reading new token resp body: %w", err)
 	}
 
 	token = &Token{}
 	err = json.Unmarshal(respBody, token)
 	if err != nil {
-		return nil, fmt.Errorf("vwp: unmarshalling json of new token: %w", err)
+		return nil, fmt.Errorf("config: unmarshalling json of new token: %w", err)
 	}
 
 	err = WriteJWTToFileCache(token)
@@ -229,18 +211,24 @@ func (c *config) KdfIterations() int32 {
 	return c.kdfConfig.KdfIterations
 }
 
-func (c *config) getKDFConfig() error {
+func (c *config) fetchKDFConfig() (KdfConfig, error) {
 	preloginReqBody := &bytes.Buffer{}
 	fmt.Fprintf(preloginReqBody, `{"email": %q}`, c.Username())
 	preloginResp, err := http.Post(c.Server()+"/identity/accounts/prelogin", "application/json", preloginReqBody)
 	if err != nil {
-		return err
+		return KdfConfig{}, err
 	}
 	preloginRespBody, err := io.ReadAll(preloginResp.Body)
 	if err != nil {
-		return err
+		return KdfConfig{}, err
 	}
-	return json.Unmarshal(preloginRespBody, &c.kdfConfig)
+
+	kdfConfig := KdfConfig{}
+	err = json.Unmarshal(preloginRespBody, &kdfConfig)
+	if err != nil {
+		return KdfConfig{}, err
+	}
+	return kdfConfig, nil
 }
 
 func (c *config) MasterKey() ([]byte, error) {
